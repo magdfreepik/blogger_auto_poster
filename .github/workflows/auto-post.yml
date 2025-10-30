@@ -1,0 +1,55 @@
+name: Blogger Auto Poster (Baghdad 10:00 & 18:00)
+
+on:
+  schedule:
+    # GitHub Actions يعمل بتوقيت UTC، بغداد = UTC+3
+    # 07:00 و 15:00 UTC = 10:00 و 18:00 بغداد
+    - cron: '0 7 * * *'
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        slot: [0, 1]   # 0=الصباح، 1=المساء
+    env:
+      GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
+      BLOG_URL:         ${{ secrets.BLOG_URL }}
+      CLIENT_ID:        ${{ secrets.CLIENT_ID }}
+      CLIENT_SECRET:    ${{ secrets.CLIENT_SECRET }}
+      REFRESH_TOKEN:    ${{ secrets.REFRESH_TOKEN }}
+      PEXELS_API_KEY:   ${{ secrets.PEXELS_API_KEY }}
+      PIXABAY_API_KEY:  ${{ secrets.PIXABAY_API_KEY }}
+
+      # إعدادات تشغيل
+      PUBLISH_MODE:     live      # جرّبه draft أولاً إن أحببت
+      USE_EXTERNAL_CRON: '0'      # لا نستخدم Flask
+      RUN_ONCE:         '1'
+      TREND_GEO_LIST:   IQ,SA,AE,EG,JO,LB,KW,QA,BH,OM
+      TOPIC_WINDOW_DAYS:'14'
+      SAFE_CALLS_PER_MIN:'3'
+      AI_MAX_RETRIES:   '3'
+      AI_BACKOFF_BASE:  '4'
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run one post for the given slot
+        run: |
+          python - <<'PY'
+          import os
+          from main import make_article_once
+          slot = int(os.getenv("SLOT", "${{ matrix.slot }}"))
+          make_article_once(slot)
+          PY
