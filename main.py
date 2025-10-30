@@ -1,71 +1,60 @@
-import os, random, time, json, requests, re, markdown, bleach, backoff, feedparser
+import os
+import time
+import requests
 from datetime import datetime, timedelta
-from urllib.parse import quote_plus
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from google.generativeai import configure, GenerativeModel
 
-# إعدادات عامة
-MIN_WORDS, MAX_WORDS = 1000, 1400
-TREND_GEO = "IQ"
+# ==================== الإعدادات العامة ====================
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BLOG_URL = os.getenv("BLOG_URL")
-REFRESH_TOKEN = os.getenv("REFRESH_TOKEN")
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+REFRESH_TOKEN = os.getenv("REFRESH_TOKEN")
 
-# -------------------------------------------
-#  1. جلب مواضيع الترند من Google News
-# -------------------------------------------
-def get_trending_topics():
-    feed = feedparser.parse("https://news.google.com/rss?hl=ar&gl=IQ&ceid=IQ:ar")
-    topics = [entry.title for entry in feed.entries[:10]]
-    random.shuffle(topics)
-    return topics
+PUBLISH_MODE = os.getenv("PUBLISH_MODE", "draft")
+TREND_GEO_LIST = os.getenv("TREND_GEO_LIST", "IQ").split(",")
+TOPIC_WINDOW_DAYS = int(os.getenv("TOPIC_WINDOW_DAYS", "14"))
+SAFE_CALLS_PER_MIN = int(os.getenv("SAFE_CALLS_PER_MIN", "3"))
+AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "3"))
+AI_BACKOFF_BASE = int(os.getenv("AI_BACKOFF_BASE", "4"))
 
-# -------------------------------------------
-#  2. توليد نص المقال من Gemini
-# -------------------------------------------
-def generate_article(prompt):
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
-    body = {
-        "contents": [{
-            "parts": [{
-                "text": (
-                    f"اكتب مقالة بحثية بالعربية لا تقل عن {MIN_WORDS} كلمة ولا تزيد عن {MAX_WORDS} "
-                    f"حول الموضوع: {prompt}. اجعل المقال منظمًا، بمقدمة وعناوين فرعية وخاتمة. "
-                    "ضع مراجع حقيقية في النهاية بشكل روابط قابلة للنقر. استخدم مصطلحات إنجليزية بين قوسين عند الحاجة."
-                )
-            }]
-        }]
-    }
-    res = requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent",
-        headers=headers, json=body
-    )
-    data = res.json()
-    if "candidates" in data:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    else:
-        raise RuntimeError(f"Gemini error: {data}")
+# ==================== تهيئة Gemini ====================
 
-# -------------------------------------------
-#  3. تنظيف النص وتحويله إلى HTML
-# -------------------------------------------
-def markdown_to_html(text):
-    html = markdown.markdown(text)
-    return bleach.clean(html, tags=["p","a","strong","em","h1","h2","h3","ul","ol","li","blockquote","br"], attributes={"a": ["href", "title"]})
+configure(api_key=GEMINI_API_KEY)
+model = GenerativeModel("gemini-1.5-flash")
 
-# -------------------------------------------
-#  4. جلب صورة مناسبة للموضوع
-# -------------------------------------------
-def fetch_image(topic):
-    query = quote_plus(topic)
-    url = f"https://source.unsplash.com/1200x630/?{query}"
-    return url
+# ==================== دالة جلب الاتجاهات ====================
 
-# -------------------------------------------
-#  5. إنشاء المقال في Blogger
-# -------------------------------------------
+def get_trending_topic(geo="IQ"):
+    try:
+        url = f"https://trends.google.com/trends/api/dailytrends?geo={geo}"
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            data = res.text.splitlines()[-1]
+            if '"title":{"query":"' in data:
+                topic = data.split('"title":{"query":"')[1].split('"')[0]
+                return topic
+    except Exception as e:
+        print("⚠️ خطأ في جلب الاتجاهات:", e)
+    return "Artificial Intelligence"
+
+# ==================== دالة توليد المقال ====================
+
+def generate_article(topic):
+    prompt = f"""
+    Write a professional Arabic research article about "{topic}".
+    The article must include introduction, analysis, and conclusion.
+    Length: 1500–2000 words.
+    Include references at the end.
+    """
+    response = model.generate_content(prompt)
+    return response.text if response and response.text else f"بحث حول {topic}"
+
+# ==================== دالة النشر في Blogger ====================
+
 def post_to_blogger(title, content, image_url):
     creds = Credentials(
         None,
@@ -75,35 +64,41 @@ def post_to_blogger(title, content, image_url):
         client_secret=CLIENT_SECRET,
     )
     service = build("blogger", "v3", credentials=creds)
-    blog_id = BLOG_URL.split("blogspot.com/")[-1].replace("/", "")
+
+    # استخراج blog_id تلقائيًا من عنوان المدونة
+    blog = service.blogs().getByUrl(url=BLOG_URL).execute()
+    blog_id = blog["id"]
+
     post_body = {
         "kind": "blogger#post",
         "blog": {"id": blog_id},
         "title": title,
         "content": f'<img src="{image_url}" style="width:100%;border-radius:8px;"><br>{content}',
     }
-    post = service.posts().insert(blogId=blog_id, body=post_body, isDraft=False).execute()
-    print("✅ تم النشر:", post["url"])
-    return post["url"]
 
-# -------------------------------------------
-#  6. توليد ونشر مقال واحد
-# -------------------------------------------
+    post = service.posts().insert(
+        blogId=blog_id,
+        body=post_body,
+        isDraft=(PUBLISH_MODE != "live")
+    ).execute()
+
+    print("✅ تم النشر:", post.get("url", "(مسودة)"))
+    return post.get("url")
+
+# ==================== الدالة الرئيسية ====================
+
 def make_article_once(slot=0):
-    topics = get_trending_topics()
-    for topic in topics:
-        print(f"🔎 توليد مقال حول: {topic}")
-        article_md = generate_article(topic)
-        if len(article_md.split()) < MIN_WORDS:
-            continue
-        image = fetch_image(topic)
-        html_content = markdown_to_html(article_md)
-        post_to_blogger(topic, html_content, image)
-        break
+    geo = TREND_GEO_LIST[slot % len(TREND_GEO_LIST)]
+    print(f"🔎 توليد موضوع من الدولة: {geo}")
+    topic = get_trending_topic(geo)
+    article = generate_article(topic)
 
-# -------------------------------------------
-#  نقطة التشغيل
-# -------------------------------------------
+    image_url = "https://via.placeholder.com/1200x630.png?text=Research+Image"
+    post_url = post_to_blogger(f"بحث حول {topic}", article, image_url)
+    return post_url
+
+# ==================== التنفيذ ====================
+
 if __name__ == "__main__":
-    print("🚀 تشغيل يدوي لمقال واحد للتجربة...")
+    print("🚀 بدء التشغيل اليدوي...")
     make_article_once(0)
