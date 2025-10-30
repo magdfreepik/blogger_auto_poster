@@ -13,7 +13,6 @@ CLIENT_SECRET  = os.getenv("CLIENT_SECRET")
 REFRESH_TOKEN  = os.getenv("REFRESH_TOKEN")
 
 PUBLISH_MODE   = os.getenv("PUBLISH_MODE", "draft")
-TREND_GEO_LIST = os.getenv("TREND_GEO_LIST", "IQ").split(",")   # نستعملها لاحقًا لو وسّعنا المواضيع
 MIN_WORDS, MAX_WORDS = 1000, 1400
 
 # ==================== أدوات مساعدة ====================
@@ -30,32 +29,83 @@ def fetch_image(topic: str) -> str:
     q = quote_plus(topic)
     return f"https://source.unsplash.com/1200x630/?{q}"
 
-# ==================== Gemini عبر REST v1 ====================
-def generate_article(topic: str) -> str:
-    """
-    نولّد مقالة عربية 1000-1400 كلمة مع مراجع قابلة للنقر.
-    نستخدم REST v1 + الموديل gemini-1.5-flash-latest لتفادي خطأ v1beta.
-    """
-    assert GEMINI_API_KEY, "GEMINI_API_KEY مفقود في الأسرار."
-    prompt = (
-        f"اكتب مقالة بحثية احترافية بالعربية حول الموضوع: {topic}.\n"
-        f"الطول بين {MIN_WORDS} و {MAX_WORDS} كلمة.\n"
-        "قسّمها إلى مقدمة، عناوين فرعية واضحة، وخاتمة.\n"
-        "ضع في النهاية قائمة مراجع بروابط قابلة للنقر (استخدم صيغة [النص](https://link)).\n"
-        "اجعل المصطلحات الفنية المهمة بالعربية ومعها المصطلح الإنجليزي بين قوسين."
-    )
-
-    url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent"
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
+# ==================== Gemini عبر REST مع محاولات متعددة ====================
+def _gemini_generate(ver: str, model: str, prompt: str):
+    """استدعاء REST مباشر؛ يرجع نصًا أو None."""
+    url = f"https://generativelanguage.googleapis.com/{ver}/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
     body = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    # محاولات بسيطة مع backoff خفيف
-    for attempt in range(3):
+    try:
         r = requests.post(url, headers=headers, json=body, timeout=60)
         data = r.json()
         if r.ok and "candidates" in data and data["candidates"]:
             return data["candidates"][0]["content"]["parts"][0]["text"]
-    raise RuntimeError(f"Gemini REST error: {data}")
+        return None, data
+    except Exception as e:
+        return None, {"error": str(e)}
+
+def _list_models(ver: str):
+    try:
+        r = requests.get(
+            f"https://generativelanguage.googleapis.com/{ver}/models?key={GEMINI_API_KEY}",
+            timeout=30,
+        )
+        if r.ok:
+            names = [m.get("name","") for m in r.json().get("models",[])]
+            return names
+    except:
+        pass
+    return []
+
+def generate_article(topic: str) -> str:
+    """
+    نولّد مقالة عربية 1000–1400 كلمة مع مراجع قابلة للنقر.
+    نحاول أوّلًا v1beta ثم نfallback إن لزم.
+    """
+    assert GEMINI_API_KEY, "GEMINI_API_KEY مفقود في الأسرار."
+
+    prompt = (
+        f"اكتب مقالة بحثية احترافية بالعربية حول الموضوع: {topic}.\n"
+        f"الطول بين {MIN_WORDS} و {MAX_WORDS} كلمة.\n"
+        "قسّمها إلى مقدمة، عناوين فرعية واضحة، وخاتمة.\n"
+        "ضع في النهاية قائمة مراجع بروابط قابلة للنقر بصيغة Markdown مثل [اسم المرجع](https://example.com).\n"
+        "استخدم المصطلحات العربية مع المصطلح الإنجليزي بين قوسين عند الحاجة."
+    )
+
+    # ترتيب المحاولات
+    attempts = [
+        ("v1beta", "gemini-1.5-flash-latest"),
+        ("v1beta", "gemini-1.5-flash"),
+        ("v1beta", "gemini-1.0-pro"),
+        ("v1",     "gemini-1.0-pro"),
+    ]
+
+    last_data = None
+    for ver, model in attempts:
+        text_or_none = _gemini_generate(ver, model, prompt)
+        if isinstance(text_or_none, tuple):
+            # رجعت (None, data)
+            text, data = text_or_none
+        else:
+            text, data = text_or_none, None
+
+        if text:
+            print(f"✅ Gemini OK via {ver}/{model}")
+            return text
+
+        last_data = data
+        print(f"⚠️ فشل عبر {ver}/{model} — نحاول نموذجًا آخر…")
+
+    # لم ينجح أي نموذج: اطبع ما هو متاح للمساعدة
+    avail_v1beta = _list_models("v1beta")
+    avail_v1     = _list_models("v1")
+    raise RuntimeError(
+        "Gemini REST error: لا يوجد نموذج متاح في حسابك من المحاولات القياسية.\n"
+        f"v1beta models: {avail_v1beta}\n"
+        f"v1 models: {avail_v1}\n"
+        f"آخر استجابة: {last_data}"
+    )
 
 # ==================== النشر على Blogger ====================
 def post_to_blogger(title: str, content_html: str, image_url: str):
@@ -68,7 +118,7 @@ def post_to_blogger(title: str, content_html: str, image_url: str):
     )
     service = build("blogger", "v3", credentials=creds)
 
-    # اجلب blog_id بدقة من API بدل القص اليدوي
+    # اجلب blog_id بدقة من API
     blog = service.blogs().getByUrl(url=BLOG_URL).execute()
     blog_id = blog["id"]
 
@@ -93,14 +143,13 @@ def post_to_blogger(title: str, content_html: str, image_url: str):
 
 # ==================== توليد ونشر مقال واحد ====================
 def make_article_once(slot: int = 0):
-    # حالياً نولّد موضوع عام؛ يمكنك لاحقًا ربطه بترند حسب الدولة من TREND_GEO_LIST
+    # موضوع افتراضي نظيف للتجربة؛ لاحقًا نربطه بترند أو جدولك اليومي
     topic = "أثر الذكاء الاصطناعي (Artificial Intelligence) على الإنتاجية والاقتصاد الرقمي"
     print(f"🔎 توليد مقال حول: {topic}")
 
     article_md = generate_article(topic)
-    # ضمان حد الكلمات
     if len(article_md.split()) < MIN_WORDS:
-        article_md += "\n\n*ملحوظة: تم التوسّع لتلبية حدّ الكلمات.*"
+        article_md += "\n\n*إضافة توسّع لتلبية الحد الأدنى من الكلمات.*"
 
     content_html = md_to_html(article_md)
     image_url = fetch_image(topic)
