@@ -28,8 +28,8 @@ jobs:
       USE_EXTERNAL_CRON: '0'      # لا نستخدم Flask داخل Actions
       RUN_ONCE:         '1'
       TREND_GEO_LIST:   IQ,SA,AE,EG,JO,LB,KW,QA,BH,OM
-      TOPIC_WINDOW_DAYS: '14'
-      SAFE_CALLS_PER_MIN: '3'
+      TOPIC_WINDOW_DAYS:'14'
+      SAFE_CALLS_PER_MIN:'3'
       AI_MAX_RETRIES:   '3'
       AI_BACKOFF_BASE:  '4'
 
