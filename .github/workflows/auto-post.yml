@@ -21,7 +21,7 @@ jobs:
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
 
-      PUBLISH_MODE: live
+      PUBLISH_MODE: draft
       USE_EXTERNAL_CRON: "0"
       RUN_ONCE: "1"
       TREND_GEO_LIST: IQ,SA,AE,EG,JO,LB,KW,QA,BH,OM
