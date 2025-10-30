@@ -25,13 +25,14 @@ def md_to_html(text: str) -> str:
     )
 
 def fetch_image(topic: str) -> str:
-    # صورة واحدة في بداية المقال، مرتبطة بالموضوع
     q = quote_plus(topic)
     return f"https://source.unsplash.com/1200x630/?{q}"
 
-# ==================== Gemini عبر REST مع محاولات متعددة ====================
-def _gemini_generate(ver: str, model: str, prompt: str):
-    """استدعاء REST مباشر؛ يرجع نصًا أو None."""
+# ==================== Gemini عبر REST ====================
+def _rest_generate(ver: str, model: str, prompt: str):
+    """نداء REST مباشر؛ model بدون بادئة 'models/'، والدالة ترجع (text | None, last_json)."""
+    if model.startswith("models/"):
+        model = model.split("/", 1)[1]
     url = f"https://generativelanguage.googleapis.com/{ver}/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     body = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -40,7 +41,7 @@ def _gemini_generate(ver: str, model: str, prompt: str):
         r = requests.post(url, headers=headers, json=body, timeout=60)
         data = r.json()
         if r.ok and "candidates" in data and data["candidates"]:
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+            return data["candidates"][0]["content"]["parts"][0]["text"], data
         return None, data
     except Exception as e:
         return None, {"error": str(e)}
@@ -52,8 +53,7 @@ def _list_models(ver: str):
             timeout=30,
         )
         if r.ok:
-            names = [m.get("name","") for m in r.json().get("models",[])]
-            return names
+            return [m.get("name","") for m in r.json().get("models",[])]
     except:
         pass
     return []
@@ -61,7 +61,7 @@ def _list_models(ver: str):
 def generate_article(topic: str) -> str:
     """
     نولّد مقالة عربية 1000–1400 كلمة مع مراجع قابلة للنقر.
-    نحاول أوّلًا v1beta ثم نfallback إن لزم.
+    نستخدم النموذج المؤكد توافره لديك: gemini-2.5-flash (v1beta ثم v1 احتياط).
     """
     assert GEMINI_API_KEY, "GEMINI_API_KEY مفقود في الأسرار."
 
@@ -73,38 +73,32 @@ def generate_article(topic: str) -> str:
         "استخدم المصطلحات العربية مع المصطلح الإنجليزي بين قوسين عند الحاجة."
     )
 
-    # ترتيب المحاولات
     attempts = [
-        ("v1beta", "gemini-1.5-flash-latest"),
-        ("v1beta", "gemini-1.5-flash"),
-        ("v1beta", "gemini-1.0-pro"),
-        ("v1",     "gemini-1.0-pro"),
+        ("v1beta", "gemini-2.5-flash"),
+        ("v1",     "gemini-2.5-flash"),
+        ("v1beta", "gemini-2.0-flash"),
+        ("v1",     "gemini-2.0-flash"),
+        ("v1beta", "gemini-pro-latest"),
+        ("v1",     "gemini-pro-latest"),
     ]
 
-    last_data = None
+    last_json = None
     for ver, model in attempts:
-        text_or_none = _gemini_generate(ver, model, prompt)
-        if isinstance(text_or_none, tuple):
-            # رجعت (None, data)
-            text, data = text_or_none
-        else:
-            text, data = text_or_none, None
-
+        print(f"🧪 محاولة عبر {ver}/{model} …")
+        text, last_json = _rest_generate(ver, model, prompt)
         if text:
             print(f"✅ Gemini OK via {ver}/{model}")
             return text
+        print(f"⚠️ فشل {ver}/{model} — نجرّب التالي…")
 
-        last_data = data
-        print(f"⚠️ فشل عبر {ver}/{model} — نحاول نموذجًا آخر…")
-
-    # لم ينجح أي نموذج: اطبع ما هو متاح للمساعدة
+    # لم ينجح أي نموذج: اطبع المتاح للمساعدة
     avail_v1beta = _list_models("v1beta")
     avail_v1     = _list_models("v1")
     raise RuntimeError(
-        "Gemini REST error: لا يوجد نموذج متاح في حسابك من المحاولات القياسية.\n"
+        "Gemini REST error: لم نصل إلى نموذج يعمل في حسابك.\n"
         f"v1beta models: {avail_v1beta}\n"
         f"v1 models: {avail_v1}\n"
-        f"آخر استجابة: {last_data}"
+        f"آخر استجابة: {last_json}"
     )
 
 # ==================== النشر على Blogger ====================
@@ -118,11 +112,9 @@ def post_to_blogger(title: str, content_html: str, image_url: str):
     )
     service = build("blogger", "v3", credentials=creds)
 
-    # اجلب blog_id بدقة من API
     blog = service.blogs().getByUrl(url=BLOG_URL).execute()
     blog_id = blog["id"]
 
-    # صورة البداية + المحتوى
     html = f'<img src="{image_url}" alt="" style="width:100%;border-radius:8px;"/><br/>' + content_html
 
     post_body = {
@@ -143,10 +135,12 @@ def post_to_blogger(title: str, content_html: str, image_url: str):
 
 # ==================== توليد ونشر مقال واحد ====================
 def make_article_once(slot: int = 0):
-    # موضوع افتراضي نظيف للتجربة؛ لاحقًا نربطه بترند أو جدولك اليومي
     topic = "أثر الذكاء الاصطناعي (Artificial Intelligence) على الإنتاجية والاقتصاد الرقمي"
     print(f"🔎 توليد مقال حول: {topic}")
 
+    article_md, _ = _rest_generate("v1beta", "gemini-2.5-flash",
+                                   f"اكتب ملخصًا للجمهور: 3 أسطر حول {topic}.")
+    # ليس ضروريًا، مجرد جس نبض
     article_md = generate_article(topic)
     if len(article_md.split()) < MIN_WORDS:
         article_md += "\n\n*إضافة توسّع لتلبية الحد الأدنى من الكلمات.*"
