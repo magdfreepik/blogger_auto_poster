@@ -2,34 +2,34 @@ name: Blogger Auto Poster (Baghdad 10:00 & 18:00)
 
 on:
   schedule:
-    - cron: "0 7 * * *"    # 10:00 Baghdad (UTC+3)
-    - cron: "0 15 * * *"   # 18:00 Baghdad (UTC+3)
-  workflow_dispatch:
+    # GitHub Actions يعمل بتوقيت UTC
+    # بغداد = UTC+3 ⇒ 10:00 بغداد = 07:00 UTC ، 18:00 بغداد = 15:00 UTC
+    - cron: '0 7 * * *'   # صباحًا
+    - cron: '0 15 * * *'  # مساءً
+  workflow_dispatch:      # تشغيل يدوي عند الحاجة
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "blogger-autopost-${{ github.workflow }}-${{ github.event.schedule || 'manual' }}"
+  cancel-in-progress: true
+
+env:
+  GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
+  BLOG_URL:         ${{ secrets.BLOG_URL }}
+  CLIENT_ID:        ${{ secrets.CLIENT_ID }}
+  CLIENT_SECRET:    ${{ secrets.CLIENT_SECRET }}
+  REFRESH_TOKEN:    ${{ secrets.REFRESH_TOKEN }}
+
+  # وضع النشر: draft (مسودة) أو live (نشر مباشر)
+  PUBLISH_MODE:     live
 
 jobs:
-  post:
+  morning:
+    if: github.event.schedule == '0 7 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        slot: [0, 1]
-    env:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      BLOG_URL: ${{ secrets.BLOG_URL }}
-      CLIENT_ID: ${{ secrets.CLIENT_ID }}
-      CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-      REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
-      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-
-      PUBLISH_MODE: draft
-      USE_EXTERNAL_CRON: "0"
-      RUN_ONCE: "1"
-      TREND_GEO_LIST: IQ,SA,AE,EG,JO,LB,KW,QA,BH,OM
-      TOPIC_WINDOW_DAYS: "14"
-      SAFE_CALLS_PER_MIN: "3"
-      AI_MAX_RETRIES: "3"
-      AI_BACKOFF_BASE: "4"
-
+    timeout-minutes: 25
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -37,16 +37,37 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Run one post for the given slot
+      - name: Post (slot 0 - صباح)
         run: |
           python - <<'PY'
-          import os
           from main import make_article_once
-          slot = int(os.getenv("SLOT", "${{ matrix.slot }}"))
-          make_article_once(slot)
+          make_article_once(0)
+          PY
+
+  evening:
+    if: github.event.schedule == '0 15 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Post (slot 1 - مساء)
+        run: |
+          python - <<'PY'
+          from main import make_article_once
+          make_article_once(1)
           PY
