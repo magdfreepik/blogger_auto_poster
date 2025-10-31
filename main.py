@@ -65,6 +65,7 @@ def md_to_html(text: str) -> str:
         strip=True
     )
     return clean.replace("<a ","<a target=\"_blank\" rel=\"noopener\" ")
+UPDATE_IF_TITLE_EXISTS = (os.getenv("UPDATE_IF_TITLE_EXISTS", "0") == "1")
 
 def clamp_words_ar(text, min_words=MIN_WORDS, max_words=MAX_WORDS):
     words = text.split()
@@ -76,6 +77,11 @@ def clamp_words_ar(text, min_words=MIN_WORDS, max_words=MAX_WORDS):
 
 def linkify_urls_md(text: str) -> str:
     return re.sub(r'(?<!\()https?://[^\s)]+', lambda m: f"[المصدر]({m.group(0)})", text)
+import hashlib as _hashlib
+
+def _salt_from(text: str) -> str:
+    h = _hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:10]
+    return h
 
 # =============== تخزين محلي لمنع التكرار ===============
 def _jsonl_read(path):
@@ -163,21 +169,32 @@ def _find_existing_post_by_title(svc, blog_id, title):
     return None
 
 def post_or_update(title: str, html_content: str, labels=None):
-    svc    = blogger_service()
-    blog_id= get_blog_id(svc, BLOG_URL)
-    body   = {"kind":"blogger#post","title":title,"content":html_content}
+    svc     = blogger_service()
+    blog_id = get_blog_id(svc, BLOG_URL)
+    body    = {"kind": "blogger#post", "title": title, "content": html_content}
     if labels: body["labels"] = labels
-    is_draft= (PUBLISH_MODE != "live")
+    is_draft = (PUBLISH_MODE != "live")
 
     fp = _fingerprint(title, html_content)
     body.setdefault("labels", []).append(f"fp-{fp}")
 
     existing = _find_existing_post_by_title(svc, blog_id, title)
-    if existing:
+
+    # سلوك جديد: لا نحدّث إذا UPDATE_IF_TITLE_EXISTS=0
+    if existing and UPDATE_IF_TITLE_EXISTS:
         upd = svc.posts().update(blogId=blog_id, postId=existing, body=body).execute()
-        print("UPDATED:", upd.get("url", upd.get("id"))); return upd
+        print("UPDATED:", upd.get("url", upd.get("id")))
+        return upd
+
+    if existing and not UPDATE_IF_TITLE_EXISTS:
+        # أنشئ عنوانًا جديدًا بسيطًا
+        title = f"{title} — {datetime.now(TZ).strftime('%Y/%m/%d %H:%M')}"
+        body["title"] = title
+
     ins = svc.posts().insert(blogId=blog_id, body=body, isDraft=is_draft).execute()
-    print("CREATED:", ins.get("url", ins.get("id")));   return ins
+    print("CREATED:", ins.get("url", ins.get("id")))
+    return ins
+
 
 # =============== Gemini REST ===============
 def _rest_generate(ver: str, model: str, prompt: str):
@@ -425,38 +442,54 @@ def fetch_img_unsplash_api(topic):
         return None
     return None
 
-def fetch_img_free(topic):
-    q = quote_plus((topic or "abstract"))
+def fetch_img_free(topic, seed: str):
+    # seed يجعل النتيجة مختلفة لكل منشور/فتحة
+    q   = quote_plus((topic or "abstract"))
+    sig = _salt_from(seed)
+    now = datetime.now(TZ).strftime("%Y%m%d%H")  # تبديل طفيف كل ساعة
+
     candidates = [
-        f"https://source.unsplash.com/1200x630/?{q}",
-        f"https://loremflickr.com/1200/630/{q}",
-        "https://picsum.photos/1200/630",
+        f"https://source.unsplash.com/1200x630/?{q}&sig={sig}",
+        f"https://loremflickr.com/1200/630/{q}?lock={sig}",
+        f"https://picsum.photos/seed/{sig}/1200/630",
     ]
     for url in candidates:
         ok = _http_ok(_ensure_https(url))
         if ok:
+            # اكسر الكاش لمدونة بلوجر فقط بإضافة v زمنية خفيفة
+            if "?" in ok:
+                ok = ok + f"&v={now}"
+            else:
+                ok = ok + f"?v={now}"
             return {"url": ok, "credit": "Free image source"}
     return None
 
-def pick_image(topic_or_title: str) -> dict:
+
+def pick_image(topic_or_title: str, slot_idx: int = 0) -> dict:
     topic = (topic_or_title or "").split("،")[0].split(":")[0].strip() or "abstract"
+    seed  = f"{topic}|{slot_idx}|{datetime.now(TZ).date().isoformat()}"
 
     if FORCED_IMAGE:
         ok = _http_ok(_ensure_https(FORCED_IMAGE))
         if ok:
             return {"url": ok, "credit": "Featured image"}
 
+    # 1) Wikipedia
     img = fetch_img_wiki(topic)
     if img: return img
 
+    # 2) APIs إن توفرت
     for fn in (fetch_img_pexels, fetch_img_pixabay, fetch_img_unsplash_api):
         img = fn(topic)
         if img: return img
 
-    img = fetch_img_free(topic)
+    # 3) مصادر حرّة بلا مفاتيح — مع بذرة مميزة
+    img = fetch_img_free(topic, seed)
     if img: return img
 
+    # 4) Placeholder مضمون
     return {"url": "https://via.placeholder.com/1200x630.png?text=LoadingAPK", "credit": "Placeholder"}
+
 
 _BAD_SRC_RE = re.compile(r'(?:المصدر|source)\s*[:\-–]?\s*(pexels|pixabay|unsplash)', re.I)
 
@@ -510,7 +543,10 @@ def make_article_once(slot: int = 0):
         title += f" — {datetime.now(TZ).strftime('%Y/%m/%d %H:%M')}"
 
     # 5) HTML + صورة غلاف مؤكدة
-    html_content = build_post_html(title, None, article_md)
+    # نمرر None ليختار من الداخل، لكن نزود slot لمزيد من التباين في اختيار الصورة
+img = pick_image(f"{category} {topic}", slot_idx=slot)
+html_content = build_post_html(title, img, article_md)
+
 
     # 6) نشر/تحديث
     labels = labels_for(category)
