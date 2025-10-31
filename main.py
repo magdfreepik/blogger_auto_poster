@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import os, re, json, html, random, hashlib
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from urllib.parse import quote_plus
 
@@ -36,9 +36,6 @@ FORCED_IMAGE         = (os.getenv("FEATURED_IMAGE_URL", "") or "").strip()
 # ترند (تستطيع وضع قائمة دول بفاصلة عبر TREND_GEO_LIST)
 TREND_GEO      = os.getenv("TREND_GEO", "IQ")
 TREND_GEO_LIST = [g.strip() for g in os.getenv("TREND_GEO_LIST", "").split(",") if g.strip()]
-
-# منع التكرار موضوعيًا (بالأيام)
-TOPIC_WINDOW_DAYS = int(os.getenv("TOPIC_WINDOW_DAYS", "14"))
 
 # ==================== أدوات HTML ====================
 def md_to_html(text: str) -> str:
@@ -89,7 +86,6 @@ def _fingerprint(title: str, html_content: str) -> str:
 
 def _find_existing_post_by_title(svc, blog_id, title):
     norm = _norm_title(title)
-
     # live
     try:
         resp = svc.posts().list(blogId=blog_id, fetchBodies=False,
@@ -99,7 +95,6 @@ def _find_existing_post_by_title(svc, blog_id, title):
                 return it["id"]
     except Exception:
         pass
-
     # drafts
     try:
         resp = svc.posts().list(blogId=blog_id, fetchBodies=False,
@@ -117,11 +112,8 @@ def post_or_update(title: str, html_content: str, labels=None):
     body = {"kind": "blogger#post", "title": title, "content": html_content}
     if labels: body["labels"] = labels
     is_draft = (PUBLISH_MODE != "live")
-
-    # منع توازي داخل Job واحد (على Actions عادة لا تتوازى نفس الـ job)
     fp = _fingerprint(title, html_content)
     body.setdefault("labels", []).append(f"fp-{fp}")
-
     existing = _find_existing_post_by_title(svc, blog_id, title)
     if existing:
         upd = svc.posts().update(blogId=blog_id, postId=existing, body=body).execute()
@@ -130,17 +122,6 @@ def post_or_update(title: str, html_content: str, labels=None):
     ins = svc.posts().insert(blogId=blog_id, body=body, isDraft=is_draft).execute()
     print("CREATED:", ins.get("url", ins.get("id")))
     return ins
-
-def recent_titles(limit=30):
-    try:
-        svc = blogger_service()
-        blog_id = get_blog_id(svc, BLOG_URL)
-        res = svc.posts().list(blogId=blog_id, fetchBodies=False,
-                               maxResults=limit, orderBy="PUBLISHED").execute()
-        items = res.get("items", []) or []
-        return { (it.get("title","") or "").strip() for it in items }
-    except Exception:
-        return set()
 
 # ==================== Gemini REST مباشر ====================
 def _rest_generate(ver: str, model: str, prompt: str):
@@ -179,7 +160,7 @@ def ask_gemini(prompt: str) -> str:
 
 # ==================== اختيار الفئة والموضوع ====================
 def cycle_cat(slot_idx, today=None):
-    """الفئات التي طلبتها فقط: tech / science / social / news."""
+    """tech / science / social / news فقط، بدون مواضيع ثابتة."""
     d = today or date.today()
     mod = ((d - date(2025,1,1)).days) % 3
     if mod == 0:
@@ -463,15 +444,14 @@ def make_article_once(slot: int = 0):
     picked = choose_topic(category, slot)
 
     # 3) توليد المقال
-title, article_md, _ = build_article(category, picked)
+    title, article_md, _ = build_article(category, picked)
 
-# 4) بناء HTML مع صورة غلاف مضمونة
-image = None  # اترك الكود يختار الصورة تلقائياً (Wiki → Pexels → Pixabay → Unsplash → Placeholder)
-html_content = build_post_html(title, image, article_md)
+    # 4) بناء HTML مع صورة غلاف مضمونة
+    # اترك image=None ليقوم build_post_html بالبحث التلقائي (Wiki → Pexels → Pixabay → Unsplash → Placeholder)
+    image = None
+    html_content = build_post_html(title, image, article_md)
 
-
-
-    # 5) منع التكرار عبر التحديث
+    # 5) منع التكرار عبر التحديث (update إذا كان العنوان موجودًا)
     labels = labels_for(category)
     res = post_or_update(title, html_content, labels=labels)
 
