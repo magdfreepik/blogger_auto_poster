@@ -69,7 +69,7 @@ jobs:
         env:
           SLOT: ${{ steps.slot.outputs.slot }}
         run: |
-          python - <<'PY'
+          python - <<PY
           import os, sys
           from main import make_article_once
           try:
