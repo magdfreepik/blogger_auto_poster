@@ -69,15 +69,17 @@ jobs:
         env:
           SLOT: ${{ steps.slot.outputs.slot }}
         run: |
-          python - <<PY
+          python - <<EOF
           import os, sys
           from main import make_article_once
+
           try:
               slot = int(os.environ.get("SLOT", "0"))
               if slot not in (0, 1):
                   raise ValueError("Invalid slot value")
               make_article_once(slot)
+              print("✅ Article generated successfully.")
           except Exception as e:
-              print("ERROR:", e, file=sys.stderr)
+              print("❌ ERROR:", e, file=sys.stderr)
               sys.exit(1)
-          PY
+          EOF
