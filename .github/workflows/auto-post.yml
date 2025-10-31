@@ -16,7 +16,7 @@ on:
 permissions:
   contents: read
 
-# منع أي تشغيلين متوازيين عبر جميع الأحداث
+# منع تشغيلين متوازيين
 concurrency:
   group: blogger-auto-publisher
   cancel-in-progress: true
@@ -50,12 +50,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # تحديد الـ slot:
-      # - عند الكرون: 07:00UTC ⇒ 0 ، 15:00UTC ⇒ 1
-      # - عند التشغيل اليدوي: input.slot
       - name: Resolve slot
         id: slot
-        shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             SLOT="${{ github.event.inputs.slot }}"
