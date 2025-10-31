@@ -2,21 +2,18 @@ name: Blogger Auto Poster (Baghdad 10:00 & 18:00)
 
 on:
   schedule:
-    # GitHub Actions بتوقيت UTC
-    # بغداد = UTC+3 ⇒ 10:00 = 07:00 UTC ، 18:00 = 15:00 UTC
-    - cron: "0 7 * * *"   # صباحًا (slot 0)
-    - cron: "0 15 * * *"  # مساءً (slot 1)
+    - cron: "0 7 * * *"    # 10:00 Baghdad (UTC+3)
+    - cron: "0 15 * * *"   # 18:00 Baghdad (UTC+3)
   workflow_dispatch:
     inputs:
       slot:
-        description: "0 = صباح (10:00 بغداد) | 1 = مساء (18:00 بغداد)"
+        description: "0 صباح، 1 مساء"
         required: true
         default: "0"
 
 permissions:
   contents: read
 
-# منع تشغيلين متوازيين
 concurrency:
   group: blogger-auto-publisher
   cancel-in-progress: true
@@ -36,10 +33,10 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -52,6 +49,7 @@ jobs:
 
       - name: Resolve slot
         id: slot
+        shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             SLOT="${{ github.event.inputs.slot }}"
@@ -65,21 +63,22 @@ jobs:
           echo "slot=$SLOT" >> "$GITHUB_OUTPUT"
           echo "Resolved SLOT=$SLOT"
 
-      - name: Post to Blogger (idempotent: update-or-insert)
+      - name: Post to Blogger (update-or-insert)
+        shell: bash
         env:
           SLOT: ${{ steps.slot.outputs.slot }}
         run: |
-          python - <<EOF
+          cat > runner.py <<'PY'
           import os, sys
           from main import make_article_once
-
           try:
-              slot = int(os.environ.get("SLOT", "0"))
-              if slot not in (0, 1):
-                  raise ValueError("Invalid slot value")
+              slot = int(os.environ.get("SLOT","0"))
+              if slot not in (0,1):
+                  raise ValueError("Invalid slot")
               make_article_once(slot)
-              print("✅ Article generated successfully.")
+              print("OK")
           except Exception as e:
-              print("❌ ERROR:", e, file=sys.stderr)
+              print("ERROR:", e, file=sys.stderr)
               sys.exit(1)
-          EOF
+          PY
+          python runner.py
