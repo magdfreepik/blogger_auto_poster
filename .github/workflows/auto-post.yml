@@ -23,13 +23,30 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
+    # == كل المتغيّرات هنا، بما فيها مفاتيح الصور ==
     env:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      BLOG_URL:       ${{ secrets.BLOG_URL }}
-      CLIENT_ID:      ${{ secrets.CLIENT_ID }}
-      CLIENT_SECRET:  ${{ secrets.CLIENT_SECRET }}
-      REFRESH_TOKEN:  ${{ secrets.REFRESH_TOKEN }}
-      PUBLISH_MODE:   live
+      # أسرار أساسية
+      GEMINI_API_KEY:      ${{ secrets.GEMINI_API_KEY }}
+      BLOG_URL:            ${{ secrets.BLOG_URL }}
+      CLIENT_ID:           ${{ secrets.CLIENT_ID }}
+      CLIENT_SECRET:       ${{ secrets.CLIENT_SECRET }}
+      REFRESH_TOKEN:       ${{ secrets.REFRESH_TOKEN }}
+
+      # مفاتيح صور (اختياري) — نفس التي نجحت بالتجربة
+      PEXELS_API_KEY:      ${{ secrets.PEXELS_API_KEY }}
+      PIXABAY_API_KEY:     ${{ secrets.PIXABAY_API_KEY }}
+      UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
+      # لو أردت صورة ثابتة مؤقتاً للغلاف (اختياري)
+      FEATURED_IMAGE_URL:  ${{ secrets.FEATURED_IMAGE_URL }}
+
+      # إعدادات سلوك السكربت
+      PUBLISH_MODE:        live          # live أو draft
+      TREND_GEO:           IQ            # للدعم الإخباري إن لزم
+      TREND_GEO_LIST:      ""            # مثال: "IQ,SA,AE,EG"
+      TOPIC_WINDOW_DAYS:   "14"          # منع تكرار موضوع مقارب خلال X يوم
+      TZ:                  Asia/Baghdad  # لتوحيد الطباعة الزمنية
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,14 +54,21 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
 
       - name: Install deps
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install google-api-python-client google-auth requests markdown bleach
+          fi
 
       - name: Decide SLOT (0/1)
         run: |
           if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            # تمييز أيّ الجدولتين نحن فيهما (UTC 07:00/15:00)
             if [[ "${{ github.event.schedule }}" == "0 15 * * *" ]]; then
               echo "SLOT=1" >> $GITHUB_ENV
             else
