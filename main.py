@@ -33,6 +33,52 @@ PIXABAY_API_KEY     = os.getenv("PIXABAY_API_KEY","")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY","")
 FORCED_IMAGE        = (os.getenv("FEATURED_IMAGE_URL","") or "").strip()
 
+# ======= مفاتيح موضوع/صورة بناءً على الليبلات في Blogger =======
+def all_recent_labels(limit=200):
+    """يرجع مجموعة بكل الليبلات المستخدمة في آخر limit منشور (حي + مسودة)."""
+    svc = blogger_service()
+    bid = get_blog_id(svc, BLOG_URL)
+    labels = set()
+    for st in (["live"], ["draft"]):
+        try:
+            res = svc.posts().list(blogId=bid, fetchBodies=False, maxResults=limit, status=st, orderBy="PUBLISHED").execute()
+            for it in (res.get("items") or []):
+                for lb in (it.get("labels") or []):
+                    labels.add(lb)
+        except Exception:
+            pass
+    return labels
+
+def label_used(key_label: str) -> bool:
+    try:
+        return key_label in all_recent_labels(300)
+    except Exception:
+        return False
+
+# ======= استخراج كلمات مفتاحية عربية من العنوان/المقال =======
+_AR_STOP = set("""
+من في على عن إلى إلىٍ الى و أو ثم كما حيث بما بما أن إن كان تكون تكونت هذه هذا ذلك تلك الذي التي الذين اللواتي اللواتي
+إذا إذ قد سوف سوفَ مع لدى بين خلال ضد نحو لدى دون غير فوق تحت حول عبر عبرَ حتى جدا جداً كثيرًا كثيرا من دون بدون
+""".split())
+
+def extract_keywords_ar(*texts, k=4):
+    txt = " ".join([t or "" for t in texts])
+    # خذ كلمات عربية/لاتينية بسيطة
+    words = re.findall(r"[A-Za-z\u0600-\u06FF]{3,}", txt)
+    # نظّف وأزل الوقفيات والكلمات العامة
+    clean = []
+    for w in words:
+        w2 = w.strip().lower()
+        if w2 in _AR_STOP: 
+            continue
+        clean.append(w2)
+    # مع بعض التمييز: أضف فئة المقال كرابط سياقي
+    seen = []
+    for w in clean:
+        if w not in seen:
+            seen.append(w)
+    return " ".join(seen[:k]) or "abstract"
+
 # ترند (اختياري للأخبار إن احتجته مستقبلًا)
 TREND_GEO      = os.getenv("TREND_GEO", "IQ")
 TREND_GEO_LIST = [g.strip() for g in os.getenv("TREND_GEO_LIST","").split(",") if g.strip()]
@@ -168,17 +214,20 @@ def _find_existing_post_by_title(svc, blog_id, title):
     except Exception: pass
     return None
 
-def post_or_update(title: str, html_content: str, labels=None):
+def post_or_update(title: str, html_content: str, labels=None, topic_key_label: str = None, image_hash_label: str = None):
     svc     = blogger_service()
     blog_id = get_blog_id(svc, BLOG_URL)
     body    = {"kind": "blogger#post", "title": title, "content": html_content}
-    if labels: body["labels"] = labels
+    body_labels = list(labels or [])
+    if topic_key_label: body_labels.append(topic_key_label)
+    if image_hash_label: body_labels.append(image_hash_label)
     is_draft = (PUBLISH_MODE != "live")
 
     fp = _fingerprint(title, html_content)
-    body.setdefault("labels", []).append(f"fp-{fp}")
+    body_labels.append(f"fp-{fp}")
+    body["labels"] = body_labels
+    ...
 
-    existing = _find_existing_post_by_title(svc, blog_id, title)
 
     # سلوك جديد: لا نحدّث إذا UPDATE_IF_TITLE_EXISTS=0
     if existing and UPDATE_IF_TITLE_EXISTS:
@@ -465,30 +514,56 @@ def fetch_img_free(topic, seed: str):
     return None
 
 
-def pick_image(topic_or_title: str, slot_idx: int = 0) -> dict:
-    topic = (topic_or_title or "").split("،")[0].split(":")[0].strip() or "abstract"
-    seed  = f"{topic}|{slot_idx}|{datetime.now(TZ).date().isoformat()}"
+def _img_hash(url: str) -> str:
+    return hashlib.sha1((url or "").encode("utf-8")).hexdigest()[:12]
 
+def pick_image(topic_or_title: str, slot_idx: int = 0, article_text: str = "") -> dict:
+    """
+    يختار صورة وفق الموضوع/العنوان والكلمات المفتاحية من النص،
+    ويتجنب أي صورة سبق استخدامها عبر label img-<hash>.
+    """
+    # 1) صياغة استعلام ذكي للصورة
+    q = extract_keywords_ar(topic_or_title, article_text, k=5)
+    base_topic = (topic_or_title or "").split("،")[0].split(":")[0].strip() or "abstract"
+    seed  = f"{base_topic}|{q}|{slot_idx}|{datetime.now(TZ).date().isoformat()}"
+
+    # 2) لو فيه صورة مفروضة
     if FORCED_IMAGE:
         ok = _http_ok(_ensure_https(FORCED_IMAGE))
-        if ok:
+        if ok and not label_used(f"img-{_img_hash(ok)}"):
             return {"url": ok, "credit": "Featured image"}
 
-    # 1) Wikipedia
-    img = fetch_img_wiki(topic)
-    if img: return img
+    # 3) دور على صور حسب الاستعلام (ويكي ← APIs ← مصادر حرّة)
+    candidates = []
 
-    # 2) APIs إن توفرت
-    for fn in (fetch_img_pexels, fetch_img_pixabay, fetch_img_unsplash_api):
-        img = fn(topic)
-        if img: return img
+    # Wikipedia أولاً باسم الموضوع ثم بالكلمات
+    for key in (base_topic, q):
+        cand = fetch_img_wiki(key)
+        if cand: candidates.append(cand)
 
-    # 3) مصادر حرّة بلا مفاتيح — مع بذرة مميزة
-    img = fetch_img_free(topic, seed)
-    if img: return img
+    # APIs (إن وُجدت المفاتيح)
+    for key in (q, base_topic):
+        for fn in (fetch_img_pexels, fetch_img_pixabay, fetch_img_unsplash_api):
+            cand = fn(key)
+            if cand: candidates.append(cand)
 
-    # 4) Placeholder مضمون
-    return {"url": "https://via.placeholder.com/1200x630.png?text=LoadingAPK", "credit": "Placeholder"}
+    # مصادر حرّة بلا مفاتيح — مع بذرة
+    free = fetch_img_free(q or base_topic, seed)
+    if free: candidates.append(free)
+
+    # 4) اختر أول رابط لم يُستخدم من قبل (حسب img-hash)
+    for cand in candidates:
+        url = _ensure_https((cand or {}).get("url", ""))
+        if not url:
+            continue
+        h = _img_hash(url)
+        if not label_used(f"img-{h}"):
+            return {"url": url, "credit": cand.get("credit", "Image source")}
+
+    # 5) كل المرشحين مستخدمون؟ خذ Placeholder مختلف بالبذرة
+    ph = fetch_img_free("abstract", seed) or {"url": "https://via.placeholder.com/1200x630.png?text=LoadingAPK", "credit":"Placeholder"}
+    return ph
+
 
 
 _BAD_SRC_RE = re.compile(r'(?:المصدر|source)\s*[:\-–]?\s*(pexels|pixabay|unsplash)', re.I)
@@ -542,17 +617,23 @@ def make_article_once(slot: int = 0):
     if _norm_text(title) in used_titles:
         title += f" — {datetime.now(TZ).strftime('%Y/%m/%d %H:%M')}"
 
-    # 5) HTML + صورة غلاف مؤكدة
-    # نختار الصورة ببذرة تعتمد على الفتحة slot لتقليل تكرار نفس الصورة
-    img = pick_image(f"{category} {topic}", slot_idx=slot)
+        # 5) HTML + صورة غلاف مؤكدة (مع منع تكرار الصور)
+    img = pick_image(f"{category} {topic}", slot_idx=slot, article_text=article_md)
     html_content = build_post_html(title, img, article_md)
+
+    # ليبل بصمة الموضوع والصورة
+    k_label = f"k-{hashlib.sha1(topic_key(f'{category}::{topic}').encode('utf-8')).hexdigest()[:12]}"
+    i_label = f"img-{hashlib.sha1(_ensure_https(img.get('url','')).encode('utf-8')).hexdigest()[:12]}"
+
+    # مزيد من الصرامة: إن وُجدت k-label مسبقًا، غيّر العنوان فورًا
+    if label_used(k_label):
+        title += f" — {datetime.now(TZ).strftime('%Y/%m/%d %H:%M')}"
+        # وأعد حساب fp تلقائيًا في post_or_update
 
     # 6) نشر/تحديث
     labels = labels_for(category)
-    res    = post_or_update(title, html_content, labels=labels)
-    record_publish(title, key)
-    state  = "مسودة" if PUBLISH_MODE != "live" else "منشور حي"
-    print(f"[{datetime.now(TZ)}] {state}: {res.get('url','(بدون رابط)')} | {category} | {title}")
+    res    = post_or_update(title, html_content, labels=labels, topic_key_label=k_label, image_hash_label=i_label)
+
 
 
 # تشغيل يدوي (اختياري محليًا)
