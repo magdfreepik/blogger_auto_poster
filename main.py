@@ -524,7 +524,7 @@ def make_article_once(slot: int = 0):
     category = category_for_slot(slot, date.today())
 
     # 2) عنوان عام من Gemini
-    topic    = propose_topic_for_category(category, slot)
+    topic = propose_topic_for_category(category, slot)
 
     # 3) منع التكرار
     used_titles = { _norm_text(t) for t in recent_titles(TITLE_WINDOW) }
@@ -535,18 +535,17 @@ def make_article_once(slot: int = 0):
         key   = topic_key(f"{category}::{topic}")
 
     # 4) نص المقال
-    prompt      = build_prompt(topic, category)
-    article_md  = ask_gemini(prompt)
-    article_md  = ensure_refs(article_md, category)
-    title       = extract_title(article_md, topic)
+    prompt     = build_prompt(topic, category)
+    article_md = ask_gemini(prompt)
+    article_md = ensure_refs(article_md, category)
+    title      = extract_title(article_md, topic)
     if _norm_text(title) in used_titles:
         title += f" — {datetime.now(TZ).strftime('%Y/%m/%d %H:%M')}"
 
     # 5) HTML + صورة غلاف مؤكدة
-    # نمرر None ليختار من الداخل، لكن نزود slot لمزيد من التباين في اختيار الصورة
-img = pick_image(f"{category} {topic}", slot_idx=slot)
-html_content = build_post_html(title, img, article_md)
-
+    # نختار الصورة ببذرة تعتمد على الفتحة slot لتقليل تكرار نفس الصورة
+    img = pick_image(f"{category} {topic}", slot_idx=slot)
+    html_content = build_post_html(title, img, article_md)
 
     # 6) نشر/تحديث
     labels = labels_for(category)
@@ -554,6 +553,7 @@ html_content = build_post_html(title, img, article_md)
     record_publish(title, key)
     state  = "مسودة" if PUBLISH_MODE != "live" else "منشور حي"
     print(f"[{datetime.now(TZ)}] {state}: {res.get('url','(بدون رابط)')} | {category} | {title}")
+
 
 # تشغيل يدوي (اختياري محليًا)
 if __name__ == "__main__":
