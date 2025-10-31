@@ -11,7 +11,9 @@ on:
         description: 'اختر الفتحة: 0 (صباح) أو 1 (مساء)'
         required: true
         type: choice
-        options: ['0', '1']
+        options:
+          - '0'
+          - '1'
         default: '0'
 
 permissions:
@@ -27,16 +29,16 @@ jobs:
     timeout-minutes: 25
 
     env:
-  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-  BLOG_URL:       ${{ secrets.BLOG_URL }}
-  CLIENT_ID:      ${{ secrets.CLIENT_ID }}
-  CLIENT_SECRET:  ${{ secrets.CLIENT_SECRET }}
-  REFRESH_TOKEN:  ${{ secrets.REFRESH_TOKEN }}
-  UPDATE_IF_TITLE_EXISTS: "0"   # لا تُحدّث منشورًا قديمًا يحمل نفس العنوان؛ أنشئ عنوانًا جديدًا
-  TITLE_WINDOW: "100"           # راقب آخر 100 عنوان للتكرار
-  TOPIC_WINDOW_DAYS: "45"       # لا تكرر موضوعًا مشابهًا خلال 45 يومًا
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      BLOG_URL:       ${{ secrets.BLOG_URL }}
+      CLIENT_ID:      ${{ secrets.CLIENT_ID }}
+      CLIENT_SECRET:  ${{ secrets.CLIENT_SECRET }}
+      REFRESH_TOKEN:  ${{ secrets.REFRESH_TOKEN }}
+      UPDATE_IF_TITLE_EXISTS: "0"   # لا تُحدّث منشورًا قديمًا يحمل نفس العنوان؛ أنشئ عنوانًا جديدًا
+      TITLE_WINDOW: "100"           # راقب آخر 100 عنوان للتكرار
+      TOPIC_WINDOW_DAYS: "45"       # لا تكرر موضوعًا مشابهًا خلال 45 يومًا
 
-      # مفاتيح الصور - اختيارية (اتركها فارغة في Secrets لو تحب "حرية كاملة")
+      # مفاتيح الصور - اختيارية
       PEXELS_API_KEY:        ${{ secrets.PEXELS_API_KEY }}
       PIXABAY_API_KEY:       ${{ secrets.PIXABAY_API_KEY }}
       UNSPLASH_ACCESS_KEY:   ${{ secrets.UNSPLASH_ACCESS_KEY }}
