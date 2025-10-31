@@ -21,25 +21,25 @@ CLIENT_ID      = os.getenv("CLIENT_ID")
 CLIENT_SECRET  = os.getenv("CLIENT_SECRET")
 REFRESH_TOKEN  = os.getenv("REFRESH_TOKEN")
 
-# وضع النشر: live | draft (اضبطه في Secrets أو env بالـWorkflow)
+# وضع النشر: live | draft
 PUBLISH_MODE   = (os.getenv("PUBLISH_MODE","draft") or "draft").lower()
 
 # حدود المقال
 MIN_WORDS, MAX_WORDS = 1000, 1400
 
-# مفاتيح اختيارية للصور
+# مفاتيح اختيارية للصور (اتركها فارغة = حرية كاملة)
 PEXELS_API_KEY      = os.getenv("PEXELS_API_KEY","")
 PIXABAY_API_KEY     = os.getenv("PIXABAY_API_KEY","")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY","")
 FORCED_IMAGE        = (os.getenv("FEATURED_IMAGE_URL","") or "").strip()
 
-# ترند (اختياري للأخبار)
+# ترند (اختياري للأخبار إن احتجته مستقبلًا)
 TREND_GEO      = os.getenv("TREND_GEO", "IQ")
 TREND_GEO_LIST = [g.strip() for g in os.getenv("TREND_GEO_LIST","").split(",") if g.strip()]
 
 # منع التكرار
-TITLE_WINDOW        = 40   # لا نكرر أي عنوان ضمن آخر 40 منشور
-TOPIC_WINDOW_DAYS   = int(os.getenv("TOPIC_WINDOW_DAYS","14"))  # لا نكرر موضوعاً مقارباً خلال X يوم
+TITLE_WINDOW        = 40
+TOPIC_WINDOW_DAYS   = int(os.getenv("TOPIC_WINDOW_DAYS","14"))
 HISTORY_TITLES_FILE = "posted_titles.jsonl"
 HISTORY_TOPICS_FILE = "used_topics.jsonl"
 
@@ -77,12 +77,12 @@ def clamp_words_ar(text, min_words=MIN_WORDS, max_words=MAX_WORDS):
 def linkify_urls_md(text: str) -> str:
     return re.sub(r'(?<!\()https?://[^\s)]+', lambda m: f"[المصدر]({m.group(0)})", text)
 
-# =============== أدوات تخزين محلي لمنع التكرار ===============
+# =============== تخزين محلي لمنع التكرار ===============
 def _jsonl_read(path):
     if not os.path.exists(path): return []
     out=[]
     with open(path,"r",encoding="utf-8") as f:
-        for ln in f: 
+        for ln in f:
             try: out.append(json.loads(ln))
             except: pass
     return out
@@ -98,7 +98,6 @@ def _norm_text(s: str) -> str:
 
 def recent_titles(limit=TITLE_WINDOW):
     titles=set()
-    # من Blogger مباشرة
     try:
         svc   = blogger_service()
         bid   = get_blog_id(svc, BLOG_URL)
@@ -109,7 +108,6 @@ def recent_titles(limit=TITLE_WINDOW):
             if t: titles.add(t)
     except Exception:
         pass
-    # من سجل محلي احتياطي
     for r in _jsonl_read(HISTORY_TITLES_FILE)[-limit:]:
         t = r.get("title","").strip()
         if t: titles.add(t)
@@ -133,7 +131,8 @@ def record_publish(title, topic_key):
 
 # =============== Blogger API ===============
 def blogger_service():
-    creds = Credentials(None,
+    creds = Credentials(
+        None,
         refresh_token=REFRESH_TOKEN,
         client_id=CLIENT_ID, client_secret=CLIENT_SECRET,
         token_uri="https://oauth2.googleapis.com/token",
@@ -151,13 +150,11 @@ def _fingerprint(title: str, html_content: str) -> str:
 
 def _find_existing_post_by_title(svc, blog_id, title):
     norm = _norm_text(title)
-    # live
     try:
         resp = svc.posts().list(blogId=blog_id, fetchBodies=False, maxResults=50, orderBy="UPDATED", status=["live"]).execute()
         for it in (resp.get("items") or []):
             if _norm_text(it.get("title")) == norm: return it["id"]
     except Exception: pass
-    # draft
     try:
         resp = svc.posts().list(blogId=blog_id, fetchBodies=False, maxResults=50, orderBy="UPDATED", status=["draft"]).execute()
         for it in (resp.get("items") or []):
@@ -216,14 +213,12 @@ def ask_gemini(prompt: str) -> str:
 
 # =============== اختيار الفئات والموضوعات ===============
 def category_for_slot(slot_idx: int, today=None) -> str:
-    """يضمن فئتين مختلفتين يومياً بالاعتماد على التاريخ والفتحة."""
     d = today or date.today()
     base = (d - date(2025,1,1)).days
     idx  = (base*2 + slot_idx) % len(CATEGORIES)
     return CATEGORIES[idx]
 
 def labels_for(category: str):
-    # تسميات عامة لكل مجموعة
     mapping = {
         "تقنية":["تقنية","ابتكار","رقمنة"],
         "علوم":["علوم","بحث"],
@@ -249,7 +244,6 @@ def labels_for(category: str):
     return mapping.get(category,["بحث"])
 
 def propose_topic_for_category(category: str, slot_idx: int) -> str:
-    # عنوان عام بلا أسماء ولا تواريخ
     prompt = f"""
 أعطني عنوان مقالة عربيّة موجزاً (سطر واحد فقط) ضمن مجال: {category}.
 الشروط:
@@ -281,7 +275,7 @@ def build_prompt(topic: str, category: str):
 
 def ensure_refs(article_md: str, category: str) -> str:
     text = article_md.strip()
-    if re.search(r'^\s*#+\s*المراجع\s*$', text, flags=re.M) is None and "المراجع" not in text:
+    if re.search(r"^\s*#+\s*المراجع\s*$", text, flags=re.M) is None and "المراجع" not in text:
         text += "\n\n## المراجع\n"
     links = re.findall(r"\[[^\]]+\]\((https?://[^)]+)\)", text)
     need  = max(0, 4 - len(links))
@@ -298,28 +292,42 @@ def ensure_refs(article_md: str, category: str) -> str:
         text += f"- [{name}]({url})\n"
     return text
 
-# عنوان صحيح: لا يُسمح أن يكون "المراجع"
 def extract_title(article_md: str, fallback: str) -> str:
-    # جرّب أول عنوان Markdown لا يساوي "المراجع"
     m = re.search(r"^\s*#+\s*(.+)$", article_md, flags=re.M)
     if m:
         t = m.group(1).strip()
         if _norm_text(t) not in ("المراجع","references"):
             return t[:90]
-    # وإلا أول سطر نصي غير فارغ وغير "المراجع"
     for ln in article_md.splitlines():
         t = ln.strip()
         if t and not t.startswith("#") and _norm_text(t) not in ("المراجع","references"):
             return t[:90]
     return (fallback or "مقال")[:90]
 
-# =============== الصور (مضمونة) ===============
+# =============== الصور (مضمونة + بدون مفاتيح عند الحاجة) ===============
+def _ensure_https(u: str) -> str:
+    if not u: return u
+    if u.startswith("//"): return "https:" + u
+    if u.startswith("http://"): return "https://" + u[7:]
+    return u
+
+def _http_ok(url: str):
+    try:
+        r = requests.get(url, timeout=20, allow_redirects=True, stream=True)
+        if r.status_code in (200, 304):
+            return r.url  # الرابط النهائي بعد أي تحويل
+    except Exception:
+        pass
+    return None
+
 def wiki_lead_image(title, lang="ar"):
     try:
         r = requests.get(
             f"https://{lang}.wikipedia.org/w/api.php",
-            params={"action":"query","format":"json","prop":"pageimages",
-                    "piprop":"original|thumbnail","pithumbsize":"1200","titles":title},
+            params={
+                "action":"query","format":"json","prop":"pageimages",
+                "piprop":"original|thumbnail","pithumbsize":"1200","titles":title
+            },
             timeout=20
         )
         if not r.ok: return None
@@ -331,87 +339,146 @@ def wiki_lead_image(title, lang="ar"):
         pass
     return None
 
-def _ensure_https(u: str) -> str:
-    if not u: return u
-    if u.startswith("//"): return "https:"+u
-    if u.startswith("http://"): return "https://"+u[7:]
-    return u
-
-def fetch_img_any(query: str):
-    # 1) Wikipedia (ar→en)
+def fetch_img_wiki(topic):
     for lang in ("ar","en"):
-        try:
-            url = wiki_lead_image(query, lang=lang)
-            if url: 
-                return {"url":url, "credit":f"Image via Wikipedia ({lang})"}
-        except Exception: pass
-    # 2) Pexels
-    if PEXELS_API_KEY:
-        try:
-            r = requests.get("https://api.pexels.com/v1/search",
-                             headers={"Authorization": PEXELS_API_KEY},
-                             params={"query": query, "per_page": 10, "orientation":"landscape"},
-                             timeout=30)
-            photos = r.json().get("photos") or []
-            if photos:
-                p = random.choice(photos)
-                return {"url":p["src"]["large2x"],
-                        "credit":f'صورة من Pexels — <a href="{html.escape(p["url"])}" target="_blank" rel="noopener">المصدر</a>'}
-        except Exception: pass
-    # 3) Pixabay
-    if PIXABAY_API_KEY:
-        try:
-            r = requests.get("https://pixabay.com/api/",
-                             params={"key":PIXABAY_API_KEY,"q":query,"image_type":"photo","per_page":10,"safesearch":"true","orientation":"horizontal"},
-                             timeout=30)
-            hits = r.json().get("hits") or []
-            if hits:
-                p = random.choice(hits)
-                return {"url":p["largeImageURL"],
-                        "credit":f'صورة من Pixabay — <a href="{html.escape(p["pageURL"])}" target="_blank" rel="noopener">المصدر</a>'}
-        except Exception: pass
-    # 4) Unsplash
-    if UNSPLASH_ACCESS_KEY:
-        try:
-            r = requests.get("https://api.unsplash.com/search/photos",
-                             headers={"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"},
-                             params={"query":query,"per_page":10,"orientation":"landscape"},
-                             timeout=30)
-            results = r.json().get("results") or []
-            if results:
-                p   = random.choice(results)
-                urls= p.get("urls") or {}
-                url = urls.get("regular") or urls.get("full")
-                if url:
-                    user = p.get("user") or {}
-                    credit = f'صورة من Unsplash — <a href="{html.escape((user.get("links") or {}).get("html","https://unsplash.com"))}" target="_blank" rel="noopener">{html.escape(user.get("name","Unsplash"))}</a>'
-                    return {"url":url, "credit":credit}
-        except Exception: pass
-    # 5) Placeholder مضمون
-    return {"url":"https://via.placeholder.com/1200x630.png?text=LoadingAPK","credit":"Placeholder"}
+        url = wiki_lead_image(topic, lang)
+        if url:
+            ok = _http_ok(_ensure_https(url))
+            if ok:
+                return {"url": ok, "credit": f"Image via Wikipedia ({lang})"}
+    return None
+
+def fetch_img_pexels(topic):
+    if not PEXELS_API_KEY: return None
+    try:
+        r = requests.get(
+            "https://api.pexels.com/v1/search",
+            headers={"Authorization": PEXELS_API_KEY},
+            params={"query": topic, "per_page": 10, "orientation": "landscape"},
+            timeout=30,
+        )
+        if not r.ok: return None
+        photos = r.json().get("photos") or []
+        if not photos: return None
+        p = random.choice(photos)
+        ok = _http_ok(_ensure_https(p["src"]["large2x"]))
+        if ok:
+            return {
+                "url": ok,
+                "credit": f'صورة من Pexels — <a href="{html.escape(p["url"])}" target="_blank" rel="noopener">المصدر</a>'
+            }
+    except Exception:
+        return None
+    return None
+
+def fetch_img_pixabay(topic):
+    if not PIXABAY_API_KEY: return None
+    try:
+        r = requests.get(
+            "https://pixabay.com/api/",
+            params={
+                "key": PIXABAY_API_KEY, "q": topic, "image_type": "photo",
+                "per_page": 10, "safesearch": "true", "orientation": "horizontal"
+            },
+            timeout=30,
+        )
+        if not r.ok: return None
+        hits = r.json().get("hits") or []
+        if not hits: return None
+        p = random.choice(hits)
+        ok = _http_ok(_ensure_https(p["largeImageURL"]))
+        if ok:
+            return {
+                "url": ok,
+                "credit": f'صورة من Pixabay — <a href="{html.escape(p["pageURL"])}" target="_blank" rel="noopener">المصدر</a>'
+            }
+    except Exception:
+        return None
+    return None
+
+def fetch_img_unsplash_api(topic):
+    if not UNSPLASH_ACCESS_KEY: return None
+    try:
+        r = requests.get(
+            "https://api.unsplash.com/search/photos",
+            headers={"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"},
+            params={"query": topic, "per_page": 10, "orientation": "landscape"},
+            timeout=30,
+        )
+        if not r.ok: return None
+        results = r.json().get("results") or []
+        if not results: return None
+        p = random.choice(results)
+        urls = p.get("urls") or {}
+        candidate = urls.get("regular") or urls.get("full") or urls.get("small")
+        if candidate:
+            ok = _http_ok(_ensure_https(candidate))
+            if ok:
+                user = p.get("user") or {}
+                credit_url = (user.get("links") or {}).get("html", "https://unsplash.com")
+                credit_name = user.get("name", "Unsplash")
+                return {
+                    "url": ok,
+                    "credit": f'صورة من Unsplash — <a href="{html.escape(credit_url)}" target="_blank" rel="noopener">{html.escape(credit_name)}</a>'
+                }
+    except Exception:
+        return None
+    return None
+
+def fetch_img_free(topic):
+    q = quote_plus((topic or "abstract"))
+    candidates = [
+        f"https://source.unsplash.com/1200x630/?{q}",
+        f"https://loremflickr.com/1200/630/{q}",
+        "https://picsum.photos/1200/630",
+    ]
+    for url in candidates:
+        ok = _http_ok(_ensure_https(url))
+        if ok:
+            return {"url": ok, "credit": "Free image source"}
+    return None
+
+def pick_image(topic_or_title: str) -> dict:
+    topic = (topic_or_title or "").split("،")[0].split(":")[0].strip() or "abstract"
+
+    if FORCED_IMAGE:
+        ok = _http_ok(_ensure_https(FORCED_IMAGE))
+        if ok:
+            return {"url": ok, "credit": "Featured image"}
+
+    img = fetch_img_wiki(topic)
+    if img: return img
+
+    for fn in (fetch_img_pexels, fetch_img_pixabay, fetch_img_unsplash_api):
+        img = fn(topic)
+        if img: return img
+
+    img = fetch_img_free(topic)
+    if img: return img
+
+    return {"url": "https://via.placeholder.com/1200x630.png?text=LoadingAPK", "credit": "Placeholder"}
 
 _BAD_SRC_RE = re.compile(r'(?:المصدر|source)\s*[:\-–]?\s*(pexels|pixabay|unsplash)', re.I)
 
-def build_post_html(title: str, article_md: str, image_query: str):
-    # اختيار صورة (مع إجبار https ووجود <img> أعلى المقال)
-    if FORCED_IMAGE:
-        img = {"url":FORCED_IMAGE, "credit":"Featured image"}
-    else:
-        img = fetch_img_any(image_query or title)
+def build_post_html(title, img, article_md):
+    if not img or not isinstance(img, dict):
+        img = pick_image(title)
 
-    cover = _ensure_https(img.get("url",""))
+    cover = _ensure_https(img.get("url", ""))
     if not cover or not cover.startswith("https://"):
         cover = "https://via.placeholder.com/1200x630.png?text=LoadingAPK"
 
     img_html = f"""
 <figure class="post-cover" style="margin:0 0 12px 0;">
-  <img src="{html.escape(cover)}" alt="{html.escape(title)}"
-       width="1200" height="675" loading="lazy" decoding="async"
+  <img src="{html.escape(cover)}"
+       alt="{html.escape(title)}"
+       width="1200" height="675"
+       loading="lazy" decoding="async"
        style="max-width:100%;height:auto;border-radius:8px;display:block;margin:auto;" />
 </figure>
 <p style="font-size:0.9em;color:#555;margin:4px 0 16px 0;">{img.get("credit","")}</p>
 <hr/>
-""".strip()+"\n"
+""".strip() + "\n"
 
     body_md   = linkify_urls_md(article_md)
     body_html = md_to_html(body_md)
@@ -420,18 +487,17 @@ def build_post_html(title: str, article_md: str, image_query: str):
 
 # =============== توليد ونشر مقال واحد ===============
 def make_article_once(slot: int = 0):
-    # 1) اختيار الفئة (فئتان مختلفتان يومياً)
+    # 1) الفئة (فئتان مختلفتان يوميًا)
     category = category_for_slot(slot, date.today())
 
-    # 2) توليد "عنوان موضوع عام" من Gemini
+    # 2) عنوان عام من Gemini
     topic    = propose_topic_for_category(category, slot)
 
-    # 3) منع التكرار موضوعياً
+    # 3) منع التكرار
     used_titles = { _norm_text(t) for t in recent_titles(TITLE_WINDOW) }
     used_keys   = recent_topic_keys(TOPIC_WINDOW_DAYS)
     key         = topic_key(f"{category}::{topic}")
     if key in used_keys or _norm_text(topic) in used_titles:
-        # غيّر البذرة لتوليد عنوان بديل بسيط
         topic = propose_topic_for_category(category, slot ^ 1)
         key   = topic_key(f"{category}::{topic}")
 
@@ -440,13 +506,11 @@ def make_article_once(slot: int = 0):
     article_md  = ask_gemini(prompt)
     article_md  = ensure_refs(article_md, category)
     title       = extract_title(article_md, topic)
-
-    # ضمان ألا يكون العنوان مكرراً بعد الاستخراج
     if _norm_text(title) in used_titles:
         title += f" — {datetime.now(TZ).strftime('%Y/%m/%d %H:%M')}"
 
-    # 5) HTML مع صورة الغلاف مضمونة
-    html_content = build_post_html(title, article_md, image_query=f"{category} {topic}")
+    # 5) HTML + صورة غلاف مؤكدة
+    html_content = build_post_html(title, None, article_md)
 
     # 6) نشر/تحديث
     labels = labels_for(category)
@@ -455,7 +519,7 @@ def make_article_once(slot: int = 0):
     state  = "مسودة" if PUBLISH_MODE != "live" else "منشور حي"
     print(f"[{datetime.now(TZ)}] {state}: {res.get('url','(بدون رابط)')} | {category} | {title}")
 
-# تشغيل يدوي
+# تشغيل يدوي (اختياري محليًا)
 if __name__ == "__main__":
     make_article_once(0)
     make_article_once(1)
