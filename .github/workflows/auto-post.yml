@@ -33,7 +33,7 @@ jobs:
       CLIENT_ID:             ${{ secrets.CLIENT_ID }}
       CLIENT_SECRET:         ${{ secrets.CLIENT_SECRET }}
       REFRESH_TOKEN:         ${{ secrets.REFRESH_TOKEN }}
-
+      UPDATE_IF_TITLE_EXISTS: "0"
       # مفاتيح الصور - اختيارية (اتركها فارغة في Secrets لو تحب "حرية كاملة")
       PEXELS_API_KEY:        ${{ secrets.PEXELS_API_KEY }}
       PIXABAY_API_KEY:       ${{ secrets.PIXABAY_API_KEY }}
