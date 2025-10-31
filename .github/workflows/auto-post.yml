@@ -4,32 +4,38 @@ on:
   schedule:
     # GitHub Actions يعمل بتوقيت UTC
     # بغداد = UTC+3 ⇒ 10:00 بغداد = 07:00 UTC ، 18:00 بغداد = 15:00 UTC
-    - cron: '0 7 * * *'   # صباحًا
-    - cron: '0 15 * * *'  # مساءً
-  workflow_dispatch:      # تشغيل يدوي عند الحاجة
+    - cron: '0 7 * * *'   # صباحًا (slot 0)
+    - cron: '0 15 * * *'  # مساءً (slot 1)
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: '0 = صباح (10:00 بغداد) | 1 = مساء (18:00 بغداد)'
+        required: true
+        default: '0'
 
 permissions:
   contents: read
 
+# يمنع أي تشغيلين متوازيين عبر كل الأحداث (كرون/يدوي)
 concurrency:
-  group: "blogger-autopost-${{ github.workflow }}-${{ github.event.schedule || 'manual' }}"
+  group: blogger-auto-publisher
   cancel-in-progress: true
 
 env:
+  # أسرار الاتصال وبيئة النشر
   GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
   BLOG_URL:         ${{ secrets.BLOG_URL }}
   CLIENT_ID:        ${{ secrets.CLIENT_ID }}
   CLIENT_SECRET:    ${{ secrets.CLIENT_SECRET }}
   REFRESH_TOKEN:    ${{ secrets.REFRESH_TOKEN }}
-
-  # وضع النشر: draft (مسودة) أو live (نشر مباشر)
   PUBLISH_MODE:     live
+  TZ:               Asia/Baghdad
 
 jobs:
-  morning:
-    if: github.event.schedule == '0 7 * * *' || github.event_name == 'workflow_dispatch'
+  publish:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -38,36 +44,46 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
 
       - name: Install deps
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Post (slot 0 - صباح)
+      # نحدد قيمة SLOT ديناميكياً:
+      # - عند الكرون: 07:00UTC ⇒ 0 ، 15:00UTC ⇒ 1
+      # - عند التشغيل اليدوي: نستخدم input.slot
+      - name: Resolve slot
+        id: slot
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            SLOT="${{ github.event.inputs.slot }}"
+          else
+            # للأمان نقرأ التعبير المجدول
+            case "${{ github.event.schedule }}" in
+              "0 7 * * *")  SLOT="0" ;;
+              "0 15 * * *") SLOT="1" ;;
+              *)            SLOT="0" ;; # احتياطي
+            esac
+          fi
+          echo "slot=$SLOT" >> "$GITHUB_OUTPUT"
+          echo "Resolved SLOT=$SLOT"
+
+      - name: Post to Blogger (idempotent: update-or-insert)
+        env:
+          SLOT: ${{ steps.slot.outputs.slot }}
         run: |
           python - <<'PY'
+          import sys
           from main import make_article_once
-          make_article_once(0)
-          PY
-
-  evening:
-    if: github.event.schedule == '0 15 * * *' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install deps
-        run: pip install -r requirements.txt
-
-      - name: Post (slot 1 - مساء)
-        run: |
-          python - <<'PY'
-          from main import make_article_once
-          make_article_once(1)
+          try:
+              s = int("${SLOT}")
+              if s not in (0,1):
+                  raise ValueError("Invalid slot")
+              make_article_once(s)
+          except Exception as e:
+              print("ERROR:", e, file=sys.stderr)
+              sys.exit(1)
           PY
