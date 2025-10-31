@@ -463,10 +463,13 @@ def make_article_once(slot: int = 0):
     picked = choose_topic(category, slot)
 
     # 3) توليد المقال
-    title, article_md, _ = build_article(category, picked)
+title, article_md, _ = build_article(category, picked)
 
-    # 4) بناء HTML مع صورة غلاف مضمونة
-    html_content = build_post_html(title, article_md, article_md)
+# 4) بناء HTML مع صورة غلاف مضمونة
+image = None  # اترك الكود يختار الصورة تلقائياً (Wiki → Pexels → Pixabay → Unsplash → Placeholder)
+html_content = build_post_html(title, image, article_md)
+
+
 
     # 5) منع التكرار عبر التحديث
     labels = labels_for(category)
