@@ -144,6 +144,37 @@ TITLE_WINDOW        = int(os.getenv("TITLE_WINDOW","40"))
 TOPIC_WINDOW_DAYS   = int(os.getenv("TOPIC_WINDOW_DAYS","14"))
 HISTORY_TITLES_FILE = "posted_titles.jsonl"
 HISTORY_TOPICS_FILE = "used_topics.jsonl"
+# =================== سياسة اختيار المواضيع ===================
+_TOPIC_POLICY = os.getenv("TOPIC_POLICY", "")
+POLICY = {
+    "avoid_repeat": "true" in _TOPIC_POLICY,
+    "diversification": "high" in _TOPIC_POLICY,
+    "allow_old_topics_after_days": int(re.search(r"after_days:(\d+)", _TOPIC_POLICY or "")[1]) if re.search(r"after_days:(\d+)", _TOPIC_POLICY or "") else 90,
+    "prefer_new_domains": "true" in _TOPIC_POLICY,
+    "trend_mix": float(re.search(r"trend_mix:(\d+(?:\.\d+)?)", _TOPIC_POLICY or "")[1]) if re.search(r"trend_mix:(\d+(?:\.\d+)?)", _TOPIC_POLICY or "") else 0.4
+}
+
+def should_skip_topic(topic_key: str) -> bool:
+    """تحقق إن كان الموضوع تكرر مؤخرًا."""
+    if not POLICY["avoid_repeat"]:
+        return False
+    cutoff = datetime.now(TZ) - timedelta(days=POLICY["allow_old_topics_after_days"])
+    for rec in load_jsonl(HISTORY_TOPICS_FILE):
+        try:
+            if rec.get("topic_key") == topic_key and datetime.fromisoformat(rec["time"]) > cutoff:
+                return True
+        except:
+            pass
+    return False
+
+def diversify_topic_request(category: str) -> str:
+    """إضافة توجيه ذكي لجيميناي لتوسيع مجالات البحث."""
+    base = f"فئة المقال: {category}\n"
+    if POLICY["diversification"]:
+        base += "اختر مجالًا جديدًا لم يتم تناوله مؤخرًا، استكشف زاوية غير مألوفة.\n"
+    if POLICY["prefer_new_domains"]:
+        base += "اختر مواضيع من مجالات ناشئة أو متطورة حديثًا بدل المواضيع التقليدية.\n"
+    return base
 
 def recent_titles(limit=TITLE_WINDOW):
     titles=set()
