@@ -386,17 +386,33 @@ def labels_for(category: str):
     }
     return mapping.get(category,["بحث"])
 
-def propose_topic_for_category(category: str, slot_idx: int) -> str:
+def propose_topic_by_ai(category: str) -> str:
+    """يطلب من Gemini اقتراح عنوان فريد في مجاله."""
+    cat_ar = {
+        "tech": "تقنية",
+        "science": "علوم",
+        "social": "اجتماعية",
+        "news": "إخبارية"
+    }.get(category, "بحث")
+
+    extra = diversify_topic_request(category)
     prompt = f"""
-أعطني عنوان مقالة عربيّة موجزاً (سطر واحد فقط) ضمن مجال: {category}.
-الشروط:
-- عنوان عام وحيادي، بلا أسماء أشخاص/شركات/علامات تجارية وبلا تواريخ محددة.
-- لا تضع علامات اقتباس.
-- رجّع العنوان كسطر واحد فقط.
-"""
-    raw = ask_gemini(prompt).splitlines()[0].strip()
-    title = re.sub(r'[\"«»]+','', raw)[:90]
-    return title or f"مقال عام في {category}"
+{extra}
+اقترح عنوانًا عربيًا مميزًا (سطر واحد فقط) لمقال {cat_ar}.
+يجب ألا يتكرر مع مواضيع منشورة سابقًا.
+ابتعد عن المواضيع العامة المكررة، وابحث عن زاوية جديدة ومثيرة.
+أعطني العنوان فقط بدون علامات اقتباس أو أرقام.
+""".strip()
+
+    for _ in range(3):
+        title = ask_gemini(prompt).splitlines()[0].strip()
+        topic_key = norm_topic_key(title)
+        if not should_skip_topic(topic_key):
+            return title
+    # fallback: إجبار تنويع المجال
+    suffix = datetime.now(TZ).strftime(" — جديد %H:%M")
+    return f"مقالة {cat_ar} {suffix}"
+
 
 def topic_key(s: str) -> str:
     return _norm_text(s)
