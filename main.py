@@ -13,6 +13,13 @@ from googleapiclient.discovery import build
 
 # =============== إعدادات عامة ===============
 TZ = ZoneInfo("Asia/Baghdad")
+# --- منع تكرار الصور: إعدادات ومساعدات ---
+IMAGE_DENY_HASHES = set(h.strip() for h in os.getenv("IMAGE_DENY_HASHES", "").split(",") if h.strip())
+
+_IMG_RE = re.compile(r'<img[^>]+src="([^"]+)"', re.I)
+
+def _img_hash(u: str) -> str:
+    return hashlib.sha1((u or "").encode("utf-8")).hexdigest()[:12]
 
 # أسرار أساسية من Secrets
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -34,6 +41,27 @@ PEXELS_API_KEY      = os.getenv("PEXELS_API_KEY","")
 PIXABAY_API_KEY     = os.getenv("PIXABAY_API_KEY","")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY","")
 FORCED_IMAGE        = (os.getenv("FEATURED_IMAGE_URL","") or "").strip()
+def recent_image_hashes(limit=60) -> set[str]:
+    """يرجع مجموعة بآخر هاشّات الصور المستخدمة (من محتوى آخر المنشورات)."""
+    hashes = set(IMAGE_DENY_HASHES)  # ابدأ بالمنع اليدوي من Secrets
+    try:
+        svc = get_blogger_service()
+        bid = get_blog_id(svc, BLOG_URL)
+        res = svc.posts().list(blogId=bid, fetchBodies=True, maxResults=limit, orderBy="PUBLISHED").execute()
+        for it in (res.get("items") or []):
+            html_body = it.get("content", "") or ""
+            m = _IMG_RE.search(html_body)
+            if m:
+                url = m.group(1)
+                hashes.add(_img_hash(url))
+    except Exception:
+        pass
+    return hashes
+def _image_is_forbidden(url: str) -> bool:
+    if not url:
+        return True
+    h = _img_hash(_ensure_https(url))
+    return h in recent_image_hashes()  # يحتوي أيضًا على IMAGE_DENY_HASHES
 
 # ======= مفاتيح موضوع/صورة بناءً على الليبلات في Blogger =======
 def blogger_service():
@@ -246,6 +274,61 @@ def category_for_slot(slot_idx: int, today=None) -> str:
     base = (d - date(2025,1,1)).days
     idx  = (base*2 + slot_idx) % len(CATEGORIES)
     return CATEGORIES[idx]
+def fetch_image(query):
+    # 0) صورة مفروضة؟
+    if FORCED_IMAGE and not _image_is_forbidden(FORCED_IMAGE):
+        return {"url": _ensure_https(FORCED_IMAGE), "credit": "Featured image"}
+
+    topic = (query or "Research").split("،")[0].split(":")[0].strip()
+
+    # 1) Wikipedia (ar → en)
+    wiki = fetch_image_general(topic)  # ترجع {"url","credit"} أو None
+    if wiki and not _image_is_forbidden(wiki["url"]):
+        wiki["url"] = _ensure_https(wiki["url"])
+        return wiki
+
+    # 2) Pexels
+    if PEXELS_API_KEY:
+        try:
+            r = requests.get("https://api.pexels.com/v1/search",
+                             headers={"Authorization": PEXELS_API_KEY},
+                             params={"query": topic, "per_page": 10, "orientation": "landscape"},
+                             timeout=30)
+            photos = r.json().get("photos", []) or []
+            random.shuffle(photos)
+            for p in photos:
+                url = _ensure_https(p["src"]["large2x"])
+                if not _image_is_forbidden(url):
+                    credit = f'صورة من Pexels — <a href="{html.escape(p["url"])}" target="_blank" rel="noopener">المصدر</a>'
+                    return {"url": url, "credit": credit}
+        except Exception:
+            pass
+
+    # 3) Pixabay
+    if PIXABAY_API_KEY:
+        try:
+            r = requests.get("https://pixabay.com/api/",
+                             params={"key": PIXABAY_API_KEY, "q": topic, "image_type": "photo",
+                                     "per_page": 10, "safesearch": "true", "orientation": "horizontal"},
+                             timeout=30)
+            hits = r.json().get("hits", []) or []
+            random.shuffle(hits)
+            for p in hits:
+                url = _ensure_https(p["largeImageURL"])
+                if not _image_is_forbidden(url):
+                    credit = f'صورة من Pixabay — <a href="{html.escape(p["pageURL"])}" target="_blank" rel="noopener">المصدر</a>'
+                    return {"url": url, "credit": credit}
+        except Exception:
+            pass
+
+    # 4) Unsplash (API اختياري)
+    us = fetch_unsplash(topic)
+    if us and not _image_is_forbidden(us["url"]):
+        us["url"] = _ensure_https(us["url"])
+        return us
+
+    # 5) Placeholder مضمون (لن يُمنع)
+    return {"url": "https://via.placeholder.com/1200x630.png?text=LoadingAPK", "credit": "Placeholder"}
 
 def labels_for(category: str):
     mapping = {
